@@ -1,0 +1,9 @@
+
+*
+
+!.gitignore
+!README.md
+!R_scripts/
+!R_scripts/**
+
+!LICENSE
