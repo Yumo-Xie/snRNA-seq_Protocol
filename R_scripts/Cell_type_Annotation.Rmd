@@ -1,0 +1,301 @@
+---
+title: "snRNA StarProtocol"
+output: html_notebook
+---
+
+
+```{r}
+library(Seurat)
+library(tidyverse)
+```
+
+# Load files
+```{r}
+files = list.files("./Data/")
+files = files[grepl("SoupX",files)]
+sample_ids <- gsub("obj_(.*?)_after_SoupX_doublets\\.qs", "\\1", files)
+files = file.path("./Data/",files)
+
+sn_list_QC = lapply(files, function(x){
+  qs::qread(x)
+})
+
+names(sn_list_QC) = sample_ids
+
+for (i in 1:length(sn_list_QC)) {
+  sn_list_QC[[i]]$Sample_ID = names(sn_list_QC)[i]
+}
+```
+
+# Integration
+```{r}
+library(SeuratWrappers)
+
+sn_obj = merge(sn_list_QC[[1]],sn_list_QC[2:8],add.cell.ids = names(sn_list_QC))
+
+metadata = read.csv("./Data/single nuclei metadata.csv")
+
+metadata$Multiplex = c(rep("Batch1",4),rep("Batch2",4))
+
+metadata = metadata[match(sn_obj$Sample_ID,metadata$Sample.ID),]
+
+sn_obj = AddMetaData(sn_obj,metadata)
+sn_obj = subset(sn_obj,doublet_finder == "Singlet")
+
+sn_obj = NormalizeData(sn_obj)
+sn_obj = FindVariableFeatures(sn_obj)
+sn_obj = ScaleData(sn_obj)
+
+sn_obj = RunPCA(sn_obj)
+
+sn_obj = IntegrateLayers(
+  object = sn_obj, method = HarmonyIntegration,
+  # layers = c("model1",paste0("model1",".",1:7)),
+  orig.reduction = "pca",
+  new.reduction = "harmony_pca",reconstructed.assay = "harmony.reconstructed", 
+  # theta = 3,
+  # group.by.vars = "Multiplex",
+  # k=k,
+  verbose = T
+)
+
+sn_obj = RunUMAP(sn_obj,reduction = "harmony_pca",dims = 1:30,reduction.name = "umap")
+sn_obj = FindNeighbors(sn_obj,reduction = "harmony_pca")
+sn_obj = FindClusters(sn_obj,resolution = 0.3,algorithm = 3)
+```
+
+
+```{r}
+SCP::CellDimPlot(sn_obj,group.by = "seurat_clusters",theme_use = SCP::theme_blank)
+```
+
+
+# Epithelium
+```{r}
+epi_sn_obj = subset(sn_obj, seurat_clusters %in% c(0,2,4,6,9,10,11,12,14) )
+epi_sn_obj <- FindNeighbors(epi_sn_obj, reduction = "harmony_pca", dims = 1:30)
+epi_sn_obj <- FindClusters(epi_sn_obj, resolution = 0.3)
+epi_sn_obj <- RunUMAP(epi_sn_obj, reduction = "harmony_pca", dims = 1:30)
+```
+
+# Canonical markers
+```{r}
+# stem
+FeaturePlot(epi_sn_obj,c("Lgr5","Ascl2","Slc12a2","Axin2","Rgmb","Olfm4"),reduction = "umap") #stem
+# Enterocyte
+FeaturePlot(epi_sn_obj,c("Cyp3a13","Alpi","Apoa1","Tmigd1","Mep1b","Fabp6"),reduction = "umap")
+# Goblet
+Features(epi_sn_obj)[grepl("Clca3",Features(epi_sn_obj))]
+FeaturePlot(epi_sn_obj,c("Muc2","Clca1","Tff3","Agr2","Fcgbp","Zg16"),reduction = "umap")
+# Paneth
+Features(epi_sn_obj)[grepl("Defa",Features(epi_sn_obj))]
+FeaturePlot(epi_sn_obj,c("Lyz1","Mptx2","Clps","Reg4","Ang4","Pnliprp2"),reduction = "umap")
+# Enteroendocrine
+FeaturePlot(epi_sn_obj,c("Chga","Chgb","Neurod1","Tph1","Vwa5b2","Cck"),reduction = "umap")
+# Tuft
+FeaturePlot(epi_sn_obj,c("Dclk1","Trpm5","Alox5ap","Rgs13","Hck","Avil"),reduction = "umap")
+# Progenitor
+FeaturePlot(epi_sn_obj,c("Slc16a1","Gsdmc4"),reduction = "umap")
+FeaturePlot(epi_sn_obj,c("Ccnb2","Ccnb1","Cdc20","Cenpa","Cdkn3","Cdc25c"),reduction = "umap")
+# Cell cycle
+FeaturePlot(epi_sn_obj,c("Mki67","Cdk4","Mcm5","Mcm6","Pcna","Cdkn1a"),reduction = "umap")
+```
+
+# Annotation
+```{r}
+Idents(epi_sn_obj) = epi_sn_obj$RNA_snn_res.0.3
+
+# 9 and 11 are contaminated by fibro and immune
+
+epi_sn_obj = subset(epi_sn_obj, idents = 9, invert = T)
+Immuepi_sn_obj = subset(epi_sn_obj, idents = 11)
+epi_sn_obj = subset(epi_sn_obj, idents = 11, invert = T)
+
+epi_sn_obj <- FindNeighbors(epi_sn_obj, reduction = "harmony_pca", dims = 1:30)
+epi_sn_obj <- FindClusters(epi_sn_obj, resolution = 0.3)
+epi_sn_obj <- RunUMAP(epi_sn_obj, 
+                      reduction = "harmony_pca",
+                      dims = 1:30,
+                      n.neighbors = 30, 
+                      min.dist = 0.3)   
+
+
+epi_sn_obj = RenameIdents(epi_sn_obj,
+             "0" = "Immature goblet cells",
+             "1" = "Stem/Transit-amplifying",
+             "2" = "Enterocytes",
+             "3" = "Enterocytes",
+             "4" = "Immature enterocyte",
+             "5" = "Goblet cells",
+             "6" = "Activated secretory cells",
+             "7" = "Goblet cells",
+             "8" = "Enteroendocrine",
+             "10" = "Enterocytes",
+             "12" = "Tuft"
+             )
+
+epi_sn_obj$epi_anno = Idents(epi_sn_obj)
+
+SCP::CellDimPlot(epi_sn_obj,group.by = "epi_anno",theme_use = SCP::theme_blank,reduction = "umap",show_stat = F) + 
+      guides(color = guide_legend(title = "", override.aes = list(size = 4)))
+
+```
+
+# Immune cells
+```{r}
+Immu_sn_obj = subset(sn_obj, idents = 5)
+
+Immu_sn_obj <- FindNeighbors(Immu_sn_obj, reduction = "harmony_pca", dims = 1:30)
+Immu_sn_obj <- FindClusters(Immu_sn_obj, resolution = 0.3)
+Immu_sn_obj <- RunUMAP(Immu_sn_obj, reduction = "harmony_pca", dims = 1:30)
+
+```
+
+# Canonical markers
+```{r}
+FeaturePlot(Immu_sn_obj,features = c("Ptprc","Cd3e","Cd8a","Cd4","Cd19","Cd68","Cd14","Cd163","Epcam"),reduction = "umap",order = T
+            ) 
+FeaturePlot(Immu_sn_obj,features = c("Kit","Xcr1","Igha","Ncam1","Ly6g","Xbp1"),reduction = "umap",order = T)
+
+```
+
+# Annotation
+```{r}
+Idents(Immu_sn_obj) = Immu_sn_obj$RNA_snn_res.0.3
+
+Immu_to_stoma = subset(Immu_sn_obj,idents = c(5,7))
+Immu_sn_obj = subset(Immu_sn_obj,idents = c(5,7),invert = T)
+
+Immu_sn_obj = RenameIdents(Immu_sn_obj,
+             "0" = "Monocytes & macrophages",
+             "1" = "CD4+ T cells",
+             "2" = "Plasma cells",
+             "3" = "B cells",
+             "4" = "CD8+ T cells",
+             # "5" = "Pdgfra+ fibroblasts ",
+             "6" = "XCR1+ Dendritic cells",
+             # "7" = "Mesothelial cells",
+             "8" = "Plasmablasts"
+             )
+
+Immu_sn_obj$Immu_anno = Idents(Immu_sn_obj)
+
+SCP::CellDimPlot(Immu_sn_obj,group.by = "Immu_anno",theme_use = SCP::theme_blank,reduction = "umap",show_stat = F) + 
+      guides(color = guide_legend(title = "", override.aes = list(size = 4)))
+
+```
+
+# Stroma
+```{r}
+Cell_likely_stroma = append(WhichCells(sn_obj, idents = c(1,3,8,13,15)),colnames(Immu_to_stoma))
+
+Stroma_sn_obj = subset(sn_obj, cells = Cell_likely_stroma) # idents = c(1,3,8,13,15)
+
+Stroma_sn_obj <- FindNeighbors(Stroma_sn_obj, reduction = "harmony_pca", dims = 1:30)
+Stroma_sn_obj <- FindClusters(Stroma_sn_obj, resolution = 0.3)
+Stroma_sn_obj <- RunUMAP(Stroma_sn_obj, reduction = "harmony_pca", dims = 1:30)
+
+SCP::CellDimPlot(Stroma_sn_obj,group.by = "seurat_clusters",theme_use = SCP::theme_blank,reduction = "umap",show_stat = F,label =T) + 
+      guides(color = guide_legend(title = "", override.aes = list(size = 4)))
+
+```
+
+# Canonical markers
+```{r}
+FeaturePlot(Stroma_sn_obj,features = c("Col1a1","Pecam1","Acta2","Vim","Myh11","Pdgfra"),reduction = "umap",order = T
+            ) 
+
+
+FeaturePlot(sn_obj,features = c("Col1a1","Pecam1","Acta2","Vim","Ctnnb1","Epcam"),reduction = "umap"
+            ) 
+
+FeaturePlot(sn_obj,features = c("Acta2","Tagln","Cnn1","Myh11","Pdgfra","Pecam1"),reduction = "umap"
+            ) 
+
+```
+
+# Find markers for rare population
+```{r}
+Stroma_sn_obj = JoinLayers(Stroma_sn_obj)
+
+C13_vs_C1 = FindMarkers(Stroma_sn_obj,ident.1 = 13,ident.2 = 1,only.pos = T)
+rownames(C13_vs_C1)[1:20]
+C1 = FindMarkers(Stroma_sn_obj,ident.1 = 1,only.pos = T)
+rownames(C1)[1:20]
+C6 = FindMarkers(Stroma_sn_obj,ident.1 = 6,only.pos = T)
+rownames(C6)[1:20]
+C13 = FindMarkers(Stroma_sn_obj,ident.1 = 13,only.pos = T)
+rownames(C13)[1:20]
+C9 = FindMarkers(Stroma_sn_obj,ident.1 = 9,only.pos = T)
+rownames(C9)[1:20]
+C12 = FindMarkers(Stroma_sn_obj,ident.1 = 12,only.pos = T)
+rownames(C12)[1:20]
+C10 = FindMarkers(Stroma_sn_obj,ident.1 = 10,only.pos = T)
+rownames(C10)[1:20]
+C11 = FindMarkers(Stroma_sn_obj,ident.1 = 11,only.pos = T)
+rownames(C11)[1:20]
+
+C3 = FindMarkers(Stroma_sn_obj,ident.1 = 3,only.pos = T)
+rownames(C3)[1:20]
+
+C8 = FindMarkers(Stroma_sn_obj,ident.1 = 8,only.pos = T)
+rownames(C8)[1:20]
+
+C16 = FindMarkers(Stroma_sn_obj,ident.1 = 16,only.pos = T)
+rownames(C16)[1:20]
+
+C4 = FindMarkers(Stroma_sn_obj,ident.1 = 4,only.pos = T)
+rownames(C4)[1:20]
+C5 = FindMarkers(Stroma_sn_obj,ident.1 = 5,only.pos = T)
+rownames(C5)[1:20]
+
+C0 = FindMarkers(Stroma_sn_obj,ident.1 = 0,only.pos = T)
+rownames(C0)[1:20]
+
+C2 = FindMarkers(Stroma_sn_obj,ident.1 = 2,only.pos = T)
+rownames(C2)[1:30]
+C7 = FindMarkers(Stroma_sn_obj,ident.1 = 7,only.pos = T)
+rownames(C7)[1:20]
+
+C2_vs_C7 = FindMarkers(Stroma_sn_obj,ident.1 = 2,ident.2 = 7,only.pos = T,min.diff.pct = 0.3)
+rownames(C2_vs_C7)[1:20]
+```
+
+# Annotation
+```{r}
+Stroma_sn_obj = subset(Stroma_sn_obj,idents = c(10,13),invert = T)
+
+Idents(Stroma_sn_obj) = Stroma_sn_obj$RNA_snn_res.0.3
+
+Stroma_sn_obj = RenameIdents(Stroma_sn_obj,
+             "0" = "SMC",
+             "1" = "Vascular endothelium",
+             "2" = "Ptgs1+ SMC",
+             "3" = "Gli1+ myofibroblasts",
+             "4" = "Adamdec1+ fibroblasts",
+             "5" = "Interstitial fibroblasts",
+             "6" = "Lymphatic endothelium",
+             "7" = "Circular SMC",
+             "8" = "Procr+ fibroblast",
+             "9" = "Enteric glia",
+             # "10" = "",
+             "11" = "Interstitial Cajal cells",
+             "12" = "Enteric neurons",
+             # "13" = " ",
+             "14" = "Pericyte",
+             "15" = "Mesothelial cells",
+             "16" = "Adipocytes"
+             )
+
+Stroma_sn_obj$stroma_anno = Idents(Stroma_sn_obj)
+
+SCP::CellDimPlot(Stroma_sn_obj,group.by = "stroma_anno",theme_use = SCP::theme_blank,reduction = "umap",show_stat = F) + 
+      guides(color = guide_legend(title = "", override.aes = list(size = 4)))
+
+```
+# Umap for all cell types
+```{r}
+SCP::CellDimPlot(sn_obj,group.by = "Major_anno",theme_use = SCP::theme_blank,reduction = "umap",show_stat = F) + 
+      guides(color = guide_legend(title = "", override.aes = list(size = 4)))
+```
+
